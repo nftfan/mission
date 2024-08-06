@@ -22,7 +22,7 @@
   border-radius: 7px;
   overflow: hidden;
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
-  border: 5px solid #1e1e1e;
+  border: 30px solid #1e1e1e;
   box-sizing: border-box; /* Ensure padding and border are included in width and height */
 }
 
@@ -159,151 +159,143 @@
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
   <script src="https://unpkg.com/leaflet-draw/dist/leaflet.draw.js"></script>
   <script>
-    var map = L.map('map').setView([51.505, -0.09], 13);
+// Initialize the map
+var map = L.map('map').setView([51.505, -0.09], 13);
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-    }).addTo(map);
+// Add tile layer
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+}).addTo(map);
 
-    var drawnItems = new L.FeatureGroup();
-    map.addLayer(drawnItems);
+// Remove drawing tools by not adding L.Control.Draw
+// No feature group for drawn items is needed
+// No draw or edit control is added
 
-    var drawControl = new L.Control.Draw({
-      draw: {
-        polygon: true,
-        polyline: false,
-        marker: false,
-        circle: false,
-        circlemarker: false,
-        rectangle: false
-      },
-      edit: {
-        featureGroup: drawnItems
+// Event listener for searching coordinates
+map.on('click', function (e) {
+  // You can optionally handle map clicks here if needed
+});
+
+// Function to handle searching coordinates
+function searchCoordinates() {
+  var coordinatesInput = document.getElementById('coordinate-input').value;
+  var coordinatesArray = coordinatesInput.match(/\[\s*(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)\s*\]/g);
+
+  if (!coordinatesArray) {
+    alert('Invalid coordinates format. Please provide coordinates in the correct format.');
+    return;
+  }
+
+  var latLngs = coordinatesArray.map(function(coord) {
+    var match = coord.match(/\[\s*(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)\s*\]/);
+    return [parseFloat(match[1]), parseFloat(match[2])];
+  });
+
+  var polygon = L.polygon(latLngs, { color: 'red' }).addTo(map);
+  map.fitBounds(polygon.getBounds());
+  updateStreetList(polygon);
+}
+
+// Function to update the street list
+function updateStreetList(polygonLayer) {
+  var polygonGeoJSON = polygonLayer.toGeoJSON();
+  var polygonCoords = polygonGeoJSON.geometry.coordinates[0].map(coord => `${coord[1]} ${coord[0]}`).join(' ');
+
+  var query = `[out:json];
+    way["highway"](poly:"${polygonCoords}");
+    out;
+  `;
+
+  fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    body: query
+  })
+  .then(response => response.json())
+  .then(data => {
+    var streets = new Set();
+    data.elements.forEach(function(element) {
+      if (element.tags && element.tags.highway && element.tags.name) {
+        streets.add(element.tags.name);
       }
     });
-    map.addControl(drawControl);
+    var sortedStreets = Array.from(streets).sort();
+    var streetListHTML = sortedStreets.map(street => `
+      <div class="street-item">
+        <span>${street}</span>
+        <button class="toggle-btn" onclick="toggleStreetStatus(this)">P</button>
+      </div>
+    `).join("");
+    document.getElementById('street-list').innerHTML = "<strong>List of Streets:</strong><br/>" + streetListHTML;
+    highlightStreets(polygonLayer);
+  })
+  .catch(error => console.error('Error:', error));
+}
 
-    map.on('draw:created', function (e) {
-      var layer = e.layer;
-      drawnItems.clearLayers();
-      drawnItems.addLayer(layer);
-      updateStreetList(layer);
+// Function to toggle street status
+function toggleStreetStatus(button) {
+  if (button.classList.contains('done')) {
+    button.classList.remove('done');
+    button.style.backgroundColor = 'red';
+    button.textContent = 'P';
+  } else {
+    button.classList.add('done');
+    button.style.backgroundColor = 'green';
+    button.textContent = 'D';
+  }
+}
+
+// Function to highlight streets on the map
+function highlightStreets(polygonLayer) {
+  var polygonGeoJSON = polygonLayer.toGeoJSON();
+  var polygonCoords = polygonGeoJSON.geometry.coordinates[0].map(coord => `${coord[1]} ${coord[0]}`).join(' ');
+
+  var query = `[out:json];
+    way["highway"](poly:"${polygonCoords}");
+    out geom;
+  `;
+
+  fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    body: query
+  })
+  .then(response => response.json())
+  .then(data => {
+    data.elements.forEach(function(element) {
+      if (element.type === "way" && element.geometry) {
+        var streetCoordinates = element.geometry.map(node => [node.lat, node.lon]);
+        var streetType = element.tags.highway || "unknown";
+        var color = getStreetColor(streetType);
+        L.polyline(streetCoordinates, { color: color }).addTo(map);
+      }
     });
+  })
+  .catch(error => console.error('Error:', error));
+}
 
-    function searchCoordinates() {
-      var coordinatesInput = document.getElementById('coordinate-input').value;
-      var coordinatesArray = coordinatesInput.match(/\[\s*(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)\s*\]/g);
+// Function to get street color based on type
+function getStreetColor(streetType) {
+  switch (streetType) {
+    case 'motorway':
+      return '#ff0000'; // red
+    case 'trunk':
+      return '#ff8000'; // orange
+    case 'primary':
+      return '#ffff00'; // yellow
+    case 'secondary':
+      return '#00ff00'; // green
+    case 'tertiary':
+      return '#0080ff'; // blue
+    default:
+      return '#808080'; // gray for unknown or other types
+  }
+}
 
-      if (!coordinatesArray) {
-        alert('Invalid coordinates format. Please provide coordinates in the correct format.');
-        return;
-      }
+// Function to handle submitting flyers
+function submitFlyers() {
+  var totalFlyers = document.getElementById('total-flyers').value;
+  alert('Total flyers distributed: ' + totalFlyers);
+}
 
-      var latLngs = coordinatesArray.map(function(coord) {
-        var match = coord.match(/\[\s*(-?\d+\.\d+)\s*,\s*(-?\d+\.\d+)\s*\]/);
-        return [parseFloat(match[1]), parseFloat(match[2])];
-      });
-
-      var polygon = L.polygon(latLngs, { color: 'red' }).addTo(map);
-      map.fitBounds(polygon.getBounds());
-      updateStreetList(polygon);
-    }
-
-    function updateStreetList(polygonLayer) {
-      var polygonGeoJSON = polygonLayer.toGeoJSON();
-      var polygonCoords = polygonGeoJSON.geometry.coordinates[0].map(coord => `${coord[1]} ${coord[0]}`).join(' ');
-
-      var query = `[out:json];
-        way["highway"](poly:"${polygonCoords}");
-        out;
-      `;
-
-      fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        body: query
-      })
-      .then(response => response.json())
-      .then(data => {
-        var streets = new Set();
-        data.elements.forEach(function(element) {
-          if (element.tags && element.tags.highway && element.tags.name) {
-            streets.add(element.tags.name);
-          }
-        });
-        var sortedStreets = Array.from(streets).sort();
-        var streetListHTML = sortedStreets.map(street => `
-          <div class="street-item">
-            <span>${street}</span>
-            <button class="toggle-btn" onclick="toggleStreetStatus(this)">P</button>
-          </div>
-        `).join("");
-        document.getElementById('street-list').innerHTML = "<strong>List of Streets:</strong><br/>" + streetListHTML;
-        highlightStreets(polygonLayer);
-      })
-      .catch(error => console.error('Error:', error));
-    }
-
-    function toggleStreetStatus(button) {
-      if (button.classList.contains('done')) {
-        button.classList.remove('done');
-        button.style.backgroundColor = 'red';
-        button.textContent = 'P';
-      } else {
-        button.classList.add('done');
-        button.style.backgroundColor = 'green';
-        button.textContent = 'D';
-      }
-    }
-
-    function highlightStreets(polygonLayer) {
-      var polygonGeoJSON = polygonLayer.toGeoJSON();
-      var polygonCoords = polygonGeoJSON.geometry.coordinates[0].map(coord => `${coord[1]} ${coord[0]}`).join(' ');
-
-      var query = `[out:json];
-        way["highway"](poly:"${polygonCoords}");
-        out geom;
-      `;
-
-      fetch('https://overpass-api.de/api/interpreter', {
-        method: 'POST',
-        body: query
-      })
-      .then(response => response.json())
-      .then(data => {
-        data.elements.forEach(function(element) {
-          if (element.type === "way" && element.geometry) {
-            var streetCoordinates = element.geometry.map(node => [node.lat, node.lon]);
-            var streetType = element.tags.highway || "unknown";
-            var color = getStreetColor(streetType);
-            L.polyline(streetCoordinates, { color: color }).addTo(map);
-          }
-        });
-      })
-      .catch(error => console.error('Error:', error));
-    }
-
-    function getStreetColor(streetType) {
-      switch (streetType) {
-        case 'motorway':
-          return '#ff0000'; // red
-        case 'trunk':
-          return '#ff8000'; // orange
-        case 'primary':
-          return '#ffff00'; // yellow
-        case 'secondary':
-          return '#00ff00'; // green
-        case 'tertiary':
-          return '#0080ff'; // blue
-        default:
-          return '#808080'; // gray for unknown or other types
-      }
-    }
-
-    function submitFlyers() {
-      var totalFlyers = document.getElementById('total-flyers').value;
-      alert('Total flyers distributed: ' + totalFlyers);
-    }
   </script>
 </body>
 </html>
-
